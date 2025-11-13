@@ -1,218 +1,180 @@
 import os
 import sys
-import json
 import time
 import threading
-import subprocess
-import winsound
-from datetime import date
+import json
+import tkinter as tk
+from tkinter import filedialog
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 from win10toast import ToastNotifier
-from pystray import Icon, MenuItem, Menu
+import pystray
+from pystray import MenuItem as item
 from PIL import Image
-import tkinter as tk
-from tkinter import filedialog
-import multiprocessing
+import winsound
+import subprocess
 
-# ----------------------
-# Helper para recursos
-# ----------------------
+# ---------------------------------------------------
+# Helper para recursos (funciona com PyInstaller --onefile)
+# ---------------------------------------------------
 def resource_path(relative_path):
-    try:
+    """
+    Retorna o caminho absoluto do recurso.
+    - Quando empacotado com PyInstaller (--onefile), os arquivos adicionados com --add-data
+      são extraídos em runtime para sys._MEIPASS.
+    - Quando rodando em modo "normal" (python script), usa o diretório do arquivo.
+    """
+    if getattr(sys, "_MEIPASS", False):
         base_path = sys._MEIPASS
-    except Exception:
-        base_path = os.path.abspath(".")
+    else:
+        base_path = os.path.dirname(__file__)
     return os.path.join(base_path, relative_path)
 
-# ----------------------
-# Recursos embutidos
-# ----------------------
+# Caminhos principais (agora resolvidos via resource_path)
+APP_DIR = os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) else os.path.dirname(__file__)
+CONFIG_PATH = os.path.join(APP_DIR, "config.json")
+
 ICON_PATH = resource_path("icone.ico")
-SOM_ALERTA = resource_path("alert.wav")
-SOM_INICIO = resource_path("start.wav")
-SOM_PAUSA = resource_path("pause.wav")
 
-CONFIG_PATH = os.path.join(
-    os.path.dirname(sys.executable if getattr(sys, 'frozen', False) else __file__),
-    "config.json"
-)
+# Sons resolvidos via resource_path (garante que funcionem no exe gerado)
+START_SOUND = resource_path("start.wav")
+ALERT_SOUND = resource_path("alert.wav")
+PAUSE_SOUND = resource_path("pause.wav")
 
-# ----------------------
-# Config persistente
-# ----------------------
+# Notificador
+toaster = ToastNotifier()
+
+# ---------------------------------------------------
+# Funções auxiliares
+# ---------------------------------------------------
+def escolher_pasta():
+    root = tk.Tk()
+    root.withdraw()
+    pasta = filedialog.askdirectory(title="Selecione a pasta para monitorar")
+    root.destroy()
+    return pasta
+
+def salvar_config(pasta_path):
+    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+        json.dump({"pasta": pasta_path}, f)
+
 def carregar_config():
     if os.path.exists(CONFIG_PATH):
-        try:
-            with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            return {"pasta_monitorada": ""}
-    return {"pasta_monitorada": ""}
+        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+            return json.load(f).get("pasta")
+    else:
+        pasta = escolher_pasta()
+        if pasta:
+            salvar_config(pasta)
+        return pasta
 
-def salvar_config(dados):
-    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-        json.dump(dados, f, indent=2, ensure_ascii=False)
-
-# ----------------------
-# Som (winsound)
-# ----------------------
 def tocar_som(caminho):
+    """
+    Toca um arquivo WAV de forma assíncrona.
+    Verifica se o arquivo existe antes de tocar (importante no exe).
+    """
     try:
         if caminho and os.path.exists(caminho):
             winsound.PlaySound(caminho, winsound.SND_FILENAME | winsound.SND_ASYNC)
     except Exception:
         pass
 
-# ----------------------
+# ---------------------------------------------------
 # Monitoramento
-# ----------------------
-class MonitorHandler(FileSystemEventHandler):
-    def __init__(self, toaster, monitor):
-        self.toaster = toaster
-        self.monitor = monitor
-
+# ---------------------------------------------------
+class Handler(FileSystemEventHandler):
     def on_created(self, event):
         if not event.is_directory:
             nome = os.path.basename(event.src_path)
-            self.monitor.contador += 1
-            self.toaster.show_toast(
-                "📂 Novo Arquivo Detectado",
-                f"{nome}\nTotal hoje: {self.monitor.contador}",
-                duration=4,
-                threaded=True
-            )
-            tocar_som(SOM_ALERTA)
+            print(f"[{time.strftime('%H:%M:%S')}] Novo arquivo: {nome}")
+            # notificação nativa
+            toaster.show_toast("📄 Novo arquivo detectado!",
+                               f"{nome}",
+                               duration=3,
+                               icon_path=ICON_PATH)
+            # tocar alerta (WAV)
+            tocar_som(ALERT_SOUND)
 
-class Monitoramento:
-    def __init__(self, pasta):
-        self.pasta = pasta
-        self.observer = None
-        self.toaster = ToastNotifier()
-        self.ativo = False
-        self.contador = 0
-        self.data_atual = date.today()
+def iniciar_monitor(pasta_path):
+    global observer
+    observer = Observer()
+    event_handler = Handler()
+    observer.schedule(event_handler, pasta_path, recursive=False)
+    observer.start()
+    print(f"[{time.strftime('%H:%M:%S')}] 🟢 Monitorando: {pasta_path}")
+    toaster.show_toast("🚀 TUBA Iniciado", f"Monitorando: {pasta_path}", duration=4, icon_path=ICON_PATH)
+    tocar_som(START_SOUND)
 
-    def _verificar_reset_diario(self):
-        if date.today() != self.data_atual:
-            self.data_atual = date.today()
-            self.contador = 0
-            self.toaster.show_toast("🕛 Contador reiniciado", "Novo dia detectado. Contador zerado.", duration=4, threaded=True)
+def parar_monitor():
+    global observer
+    try:
+        observer.stop()
+        observer.join()
+        print("[🟡] Monitor pausado.")
+    except Exception:
+        pass
+    tocar_som(PAUSE_SOUND)
 
-    def iniciar(self):
-        if not self.pasta or not os.path.exists(self.pasta):
-            self.toaster.show_toast("❌ Erro", "A pasta monitorada não existe!", duration=4, threaded=True)
-            return
-        self.handler = MonitorHandler(self.toaster, self)
-        self.observer = Observer()
-        self.observer.schedule(self.handler, self.pasta, recursive=True)
-        self.observer.start()
-        self.ativo = True
-        self.contador = 0
-        threading.Thread(target=self._loop_reset, daemon=True).start()
-        tocar_som(SOM_INICIO)
-        self.toaster.show_toast("✅ Monitoramento iniciado", f"Pasta: {self.pasta}", duration=4, threaded=True)
-
-    def _loop_reset(self):
-        while self.ativo:
-            self._verificar_reset_diario()
-            time.sleep(60)
-
-    def parar(self):
-        if self.observer:
-            try:
-                self.observer.stop()
-                self.observer.join()
-            except Exception:
-                pass
-        self.ativo = False
-        tocar_som(SOM_PAUSA)
-        self.toaster.show_toast("⏸️ Monitoramento pausado", duration=3, threaded=True)
-
-# ----------------------
-# Bandeja / UI
-# ----------------------
-def iniciar_bandeja():
-    config = carregar_config()
-    pasta_monitorada = config.get("pasta_monitorada", "") or ""
-    toaster = ToastNotifier()
-    monitor = Monitoramento(pasta_monitorada)
-
-    # função que abre diálogo (na thread) e inicia monitor se escolhido
-    def escolher_e_iniciar():
+# ---------------------------------------------------
+# Abertura da pasta monitorada (nova função solicitada)
+# ---------------------------------------------------
+def abrir_pasta(icon, item):
+    """
+    Abre a pasta atualmente monitorada no Explorer.
+    Usa a variável global 'pasta' e verifica existência antes de tentar abrir.
+    """
+    global pasta
+    caminho = pasta or carregar_config() or ""
+    if caminho and os.path.exists(pasta):
         try:
-            root = tk.Tk()
-            root.withdraw()
-            pasta = filedialog.askdirectory(title="Selecione a pasta para monitorar")
-            root.destroy()
+            subprocess.Popen(['explorer', pasta])
         except Exception:
-            pasta = ""
-        if pasta:
-            # normalizar caminho
-            pasta = os.path.abspath(pasta)
-            monitor.parar()
-            monitor.pasta = pasta
-            config["pasta_monitorada"] = pasta
-            salvar_config(config)
-            threading.Thread(target=monitor.iniciar, daemon=True).start()
-            toaster.show_toast("✅ Pasta definida", f"Monitorando: {pasta}", duration=4, threaded=True)
-            tocar_som(SOM_INICIO)
-        else:
-            toaster.show_toast("⚠️ Nenhuma pasta selecionada", "Você pode definir pelo menu da bandeja.", duration=4, threaded=True)
-
-    # ao iniciar app pela primeira vez sem config -> abre diálogo automaticamente (em thread)
-    if not pasta_monitorada:
-        toaster.show_toast("🟡 TUBA iniciado", "Selecione a pasta para começar o monitoramento.", duration=4, threaded=True)
-        threading.Thread(target=escolher_e_iniciar, daemon=True).start()
-    else:
-        # iniciar monitor automaticamente
-        threading.Thread(target=monitor.iniciar, daemon=True).start()
-        toaster.show_toast("🚀 TUBA iniciado", f"Monitorando: {pasta_monitorada}", duration=4, threaded=True)
-
-    # funções do menu (sempre referenciam monitor e config atual)
-    def menu_escolher(icon, item):
-        threading.Thread(target=escolher_e_iniciar, daemon=True).start()
-
-    def menu_iniciar(icon, item):
-        if not monitor.ativo:
-            threading.Thread(target=monitor.iniciar, daemon=True).start()
-
-    def menu_parar(icon, item):
-        monitor.parar()
-
-    def menu_abrir_pasta(icon, item):
-        # tenta priorizar monitor.pasta, se vazio usa config salvo
-        caminho = getattr(monitor, "pasta", "") or config.get("pasta_monitorada", "") or ""
-        if caminho and os.path.exists(caminho):
-            # abrir a pasta correta
+            # fallback (acerta aspas se necessário)
             try:
-                subprocess.Popen(['explorer', caminho])
+                subprocess.Popen(f'explorer "{pasta}"')
             except Exception:
-                # fallback
-                subprocess.Popen(f'explorer "{caminho}"')
-        else:
-            toaster.show_toast("⚠️ Nenhuma pasta válida", "Defina uma pasta primeiro.", duration=3, threaded=True)
+                toaster.show_toast("⚠️ Erro", "Não foi possível abrir a pasta.", duration=3, icon_path=ICON_PATH)
+    else:
+        toaster.show_toast("⚠️ Nenhuma pasta válida", "Defina uma pasta primeiro.", duration=3, icon_path=ICON_PATH)
 
-    def menu_sair(icon, item):
-        monitor.parar()
-        icon.stop()
+# ---------------------------------------------------
+# Ícone da bandeja
+# ---------------------------------------------------
+def alterar_pasta(icon, item):
+    global pasta
+    parar_monitor()
+    nova = escolher_pasta()
+    if nova:
+        pasta = nova
+        salvar_config(pasta)
+        threading.Thread(target=iniciar_monitor, args=(pasta,), daemon=True).start()
+        toaster.show_toast("📂 Pasta alterada", f"Agora monitorando:\n{pasta}", duration=3, icon_path=ICON_PATH)
 
-    menu = Menu(
-        MenuItem("📁 Escolher pasta", menu_escolher),
-        MenuItem("📂 Abrir pasta monitorada", menu_abrir_pasta),
-        MenuItem("▶️ Iniciar", menu_iniciar),
-        MenuItem("⏸️ Parar", menu_parar),
-        MenuItem("🚪 Sair", menu_sair)
-    )
+def sair(icon, item):
+    parar_monitor()
+    toaster.show_toast("👋 Encerrando TUBA", "O monitor foi encerrado.", duration=3, icon_path=ICON_PATH)
+    icon.stop()
+    os._exit(0)
 
-    # carregar ícone (do exe, via resource_path)
+def iniciar_bandeja():
+    # carregar ícone a partir do resource_path (funciona no exe)
     image = Image.open(ICON_PATH)
-    icon = Icon("TUBA", image, "TUBA - Monitor de Arquivos", menu)
-    icon.run()
+    menu = (
+        item("📂 Alterar pasta monitorada", alterar_pasta),
+        item("📂 Abrir pasta monitorada", abrir_pasta),  # item adicionado
+        item("❌ Sair", sair)
+    )
+    icone = pystray.Icon("TUBA", image, "TUBA Monitor", menu)
+    icone.run()
 
-# ----------------------
-# Main
-# ----------------------
+# ---------------------------------------------------
+# Inicialização principal
+# ---------------------------------------------------
 if __name__ == "__main__":
-    multiprocessing.freeze_support()
+    pasta = carregar_config()
+    if not pasta:
+        toaster.show_toast("⚠️ Nenhuma pasta selecionada", "Selecione uma pasta para monitorar.", duration=4, icon_path=ICON_PATH)
+        sys.exit()
+
+    threading.Thread(target=iniciar_monitor, args=(pasta,), daemon=True).start()
     iniciar_bandeja()
