@@ -9,7 +9,7 @@ from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 from win10toast import ToastNotifier
 import pystray
-from pystray import MenuItem as item
+from pystray import MenuItem as item, Menu
 from PIL import Image
 import winsound
 import subprocess
@@ -706,18 +706,18 @@ def iniciar_bandeja():
             # Seção de controle
             item("▶️ Retomar monitoramento", retomar_monitoramento),
             item("⏸️ Pausar monitoramento", pausar_monitoramento),
-            item.Menu.SEPARATOR,
+            Menu.SEPARATOR,
             
             # Seção de pastas
             item("📂 Abrir pasta monitorada", abrir_pasta),
             item("🔄 Alterar pasta monitorada", alterar_pasta),
-            item.Menu.SEPARATOR,
+            Menu.SEPARATOR,
             
             # Seção de informações e configurações
             item("📊 Ver estatísticas", ver_estatisticas),
             item("🔄 Alternar início automático", alternar_inicio_automatico),
             item("ℹ️ Sobre", mostrar_sobre),
-            item.Menu.SEPARATOR,
+            Menu.SEPARATOR,
             
             # Sair
             item("❌ Sair", sair)
