@@ -304,6 +304,7 @@ def abrir_pasta(icon, item):
     try:
         # Obter caminho da pasta
         caminho = pasta or carregar_config() or ""
+        logging.info(f"Tentando abrir pasta. pasta={pasta}, caminho={caminho}")
         
         # Verificar se o caminho existe
         if caminho and os.path.exists(caminho):
