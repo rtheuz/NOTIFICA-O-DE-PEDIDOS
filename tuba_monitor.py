@@ -68,6 +68,11 @@ toaster = ToastNotifier()
 observer = None
 pasta = None
 monitor_lock = threading.Lock()
+monitor_ativo = False
+arquivos_detectados_hoje = 0
+data_atual = time.strftime('%Y-%m-%d')
+ultimos_arquivos = []  # Lista dos últimos 5 arquivos detectados
+MAX_ULTIMOS_ARQUIVOS = 5
 
 # ---------------------------------------------------
 # Funções auxiliares
@@ -185,14 +190,32 @@ class Handler(FileSystemEventHandler):
         Args:
             event: Evento do watchdog contendo informações do arquivo.
         """
+        global arquivos_detectados_hoje, data_atual, ultimos_arquivos
+        
         try:
             if not event.is_directory:
                 nome = os.path.basename(event.src_path)
-                logging.info(f"Novo arquivo detectado: {nome}")
                 
-                # Notificação nativa do Windows
+                # Verificar se mudou o dia e resetar contador
+                hoje = time.strftime('%Y-%m-%d')
+                if hoje != data_atual:
+                    data_atual = hoje
+                    arquivos_detectados_hoje = 0
+                    logging.info("Novo dia iniciado - contador resetado")
+                
+                # Incrementar contador
+                arquivos_detectados_hoje += 1
+                
+                # Adicionar à lista de últimos arquivos
+                ultimos_arquivos.insert(0, nome)
+                if len(ultimos_arquivos) > MAX_ULTIMOS_ARQUIVOS:
+                    ultimos_arquivos.pop()
+                
+                logging.info(f"Novo arquivo detectado: {nome} (Total hoje: {arquivos_detectados_hoje})")
+                
+                # Notificação nativa do Windows com contador
                 toaster.show_toast(
-                    "📄 Novo arquivo detectado!",
+                    f"📄 Arquivo #{arquivos_detectados_hoje} detectado!",
                     f"{nome}",
                     duration=3,
                     icon_path=ICON_PATH if os.path.exists(ICON_PATH) else None
@@ -213,7 +236,7 @@ def iniciar_monitor(pasta_path):
     Returns:
         bool: True se iniciado com sucesso, False caso contrário.
     """
-    global observer
+    global observer, monitor_ativo
     
     # Validar se a pasta existe
     if not pasta_path or not os.path.exists(pasta_path):
@@ -243,6 +266,7 @@ def iniciar_monitor(pasta_path):
             event_handler = Handler()
             observer.schedule(event_handler, pasta_path, recursive=False)
             observer.start()
+            monitor_ativo = True
             
         logging.info(f"Monitor iniciado para: {pasta_path}")
         toaster.show_toast(
@@ -270,21 +294,24 @@ def parar_monitor():
     Returns:
         bool: True se parado com sucesso, False caso contrário.
     """
-    global observer
+    global observer, monitor_ativo
     
     try:
         with monitor_lock:
             if observer is not None and observer.is_alive():
                 observer.stop()
                 observer.join(timeout=5)  # Aguardar até 5 segundos
+                monitor_ativo = False
                 logging.info("Monitor parado com sucesso")
                 tocar_som(PAUSE_SOUND)
                 return True
             else:
                 logging.warning("Monitor não estava ativo")
+                monitor_ativo = False
                 return False
     except Exception as e:
         logging.error(f"Erro ao parar monitor: {e}")
+        monitor_ativo = False
         return False
 
 # ---------------------------------------------------
@@ -350,6 +377,217 @@ def abrir_pasta(icon, item):
         toaster.show_toast(
             "⚠️ Erro",
             "Erro ao processar solicitação.",
+            duration=3,
+            icon_path=ICON_PATH if os.path.exists(ICON_PATH) else None
+        )
+
+# ---------------------------------------------------
+# Funções de controle do monitor
+# ---------------------------------------------------
+def pausar_monitoramento(icon, item):
+    """
+    Pausa o monitoramento temporariamente sem encerrar o aplicativo.
+    
+    Args:
+        icon: Ícone da bandeja do sistema.
+        item: Item do menu clicado.
+    """
+    global monitor_ativo
+    
+    try:
+        if monitor_ativo:
+            parar_monitor()
+            toaster.show_toast(
+                "⏸️ Monitor Pausado",
+                "O monitoramento foi pausado.",
+                duration=2,
+                icon_path=ICON_PATH if os.path.exists(ICON_PATH) else None
+            )
+            logging.info("Monitoramento pausado pelo usuário")
+        else:
+            logging.warning("Monitor já estava pausado")
+    except Exception as e:
+        logging.error(f"Erro ao pausar monitoramento: {e}")
+
+def retomar_monitoramento(icon, item):
+    """
+    Retoma o monitoramento após pausar.
+    
+    Args:
+        icon: Ícone da bandeja do sistema.
+        item: Item do menu clicado.
+    """
+    global pasta, monitor_ativo
+    
+    try:
+        if not monitor_ativo:
+            caminho = pasta or carregar_config()
+            if caminho and os.path.exists(caminho):
+                threading.Thread(target=iniciar_monitor, args=(caminho,), daemon=True).start()
+                toaster.show_toast(
+                    "▶️ Monitor Retomado",
+                    "O monitoramento foi retomado.",
+                    duration=2,
+                    icon_path=ICON_PATH if os.path.exists(ICON_PATH) else None
+                )
+                logging.info("Monitoramento retomado pelo usuário")
+            else:
+                toaster.show_toast(
+                    "⚠️ Erro",
+                    "Pasta não encontrada. Configure novamente.",
+                    duration=3,
+                    icon_path=ICON_PATH if os.path.exists(ICON_PATH) else None
+                )
+        else:
+            logging.warning("Monitor já estava ativo")
+    except Exception as e:
+        logging.error(f"Erro ao retomar monitoramento: {e}")
+
+def ver_estatisticas(icon, item):
+    """
+    Mostra estatísticas de arquivos detectados.
+    
+    Args:
+        icon: Ícone da bandeja do sistema.
+        item: Item do menu clicado.
+    """
+    try:
+        mensagem = f"Arquivos detectados hoje: {arquivos_detectados_hoje}\n"
+        mensagem += f"Status: {'🟢 Ativo' if monitor_ativo else '🔴 Pausado'}"
+        
+        if ultimos_arquivos:
+            mensagem += f"\n\nÚltimos arquivos:\n"
+            for i, arquivo in enumerate(ultimos_arquivos[:3], 1):
+                # Limitar tamanho do nome do arquivo
+                nome_curto = arquivo[:30] + "..." if len(arquivo) > 30 else arquivo
+                mensagem += f"{i}. {nome_curto}\n"
+        
+        toaster.show_toast(
+            "📊 Estatísticas - TUBA",
+            mensagem,
+            duration=5,
+            icon_path=ICON_PATH if os.path.exists(ICON_PATH) else None
+        )
+        logging.info("Estatísticas exibidas")
+    except Exception as e:
+        logging.error(f"Erro ao exibir estatísticas: {e}")
+
+def mostrar_sobre(icon, item):
+    """
+    Mostra informações sobre o aplicativo.
+    
+    Args:
+        icon: Ícone da bandeja do sistema.
+        item: Item do menu clicado.
+    """
+    try:
+        mensagem = f"{APP_NAME} v{APP_VERSION}\n"
+        mensagem += f"Por {APP_AUTHOR}\n\n"
+        mensagem += f"{APP_DESCRIPTION}\n\n"
+        mensagem += "Sistema de monitoramento profissional\n"
+        mensagem += "com notificações em tempo real."
+        
+        toaster.show_toast(
+            f"ℹ️ Sobre - {APP_NAME}",
+            mensagem,
+            duration=6,
+            icon_path=ICON_PATH if os.path.exists(ICON_PATH) else None
+        )
+        logging.info("Informações 'Sobre' exibidas")
+    except Exception as e:
+        logging.error(f"Erro ao exibir informações sobre: {e}")
+
+def verificar_inicio_automatico():
+    """
+    Verifica se o aplicativo está configurado para iniciar com o Windows.
+    
+    Returns:
+        bool: True se configurado para iniciar automaticamente, False caso contrário.
+    """
+    try:
+        import winreg
+        key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_READ)
+        try:
+            winreg.QueryValueEx(key, APP_NAME)
+            winreg.CloseKey(key)
+            return True
+        except WindowsError:
+            winreg.CloseKey(key)
+            return False
+    except Exception as e:
+        logging.warning(f"Não foi possível verificar início automático: {e}")
+        return False
+
+def configurar_inicio_automatico(habilitar=True):
+    """
+    Configura ou remove o início automático do aplicativo com o Windows.
+    
+    Args:
+        habilitar (bool): True para habilitar, False para desabilitar.
+    
+    Returns:
+        bool: True se configurado com sucesso, False caso contrário.
+    """
+    try:
+        import winreg
+        key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_SET_VALUE)
+        
+        if habilitar:
+            # Adicionar ao registro
+            exe_path = sys.executable if getattr(sys, 'frozen', False) else f'"{sys.executable}" "{__file__}"'
+            winreg.SetValueEx(key, APP_NAME, 0, winreg.REG_SZ, exe_path)
+            logging.info("Início automático habilitado")
+            resultado = True
+        else:
+            # Remover do registro
+            try:
+                winreg.DeleteValue(key, APP_NAME)
+                logging.info("Início automático desabilitado")
+                resultado = True
+            except WindowsError:
+                logging.warning("Início automático já estava desabilitado")
+                resultado = False
+        
+        winreg.CloseKey(key)
+        return resultado
+    except Exception as e:
+        logging.error(f"Erro ao configurar início automático: {e}")
+        return False
+
+def alternar_inicio_automatico(icon, item):
+    """
+    Alterna o estado do início automático.
+    
+    Args:
+        icon: Ícone da bandeja do sistema.
+        item: Item do menu clicado.
+    """
+    try:
+        if verificar_inicio_automatico():
+            # Está habilitado, então desabilitar
+            if configurar_inicio_automatico(False):
+                toaster.show_toast(
+                    "🚫 Início Automático",
+                    "Desabilitado com sucesso.",
+                    duration=3,
+                    icon_path=ICON_PATH if os.path.exists(ICON_PATH) else None
+                )
+        else:
+            # Está desabilitado, então habilitar
+            if configurar_inicio_automatico(True):
+                toaster.show_toast(
+                    "✅ Início Automático",
+                    "Habilitado com sucesso.",
+                    duration=3,
+                    icon_path=ICON_PATH if os.path.exists(ICON_PATH) else None
+                )
+    except Exception as e:
+        logging.error(f"Erro ao alternar início automático: {e}")
+        toaster.show_toast(
+            "⚠️ Erro",
+            "Não foi possível alterar configuração.",
             duration=3,
             icon_path=ICON_PATH if os.path.exists(ICON_PATH) else None
         )
@@ -463,15 +701,31 @@ def iniciar_bandeja():
             image = Image.open(ICON_PATH)
             logging.info("Ícone carregado com sucesso")
         
-        # Criar menu da bandeja
+        # Criar menu da bandeja com melhor organização e separadores
         menu = (
-            item("📂 Alterar pasta monitorada", alterar_pasta),
+            # Seção de controle
+            item("▶️ Retomar monitoramento", retomar_monitoramento),
+            item("⏸️ Pausar monitoramento", pausar_monitoramento),
+            item.Menu.SEPARATOR,
+            
+            # Seção de pastas
             item("📂 Abrir pasta monitorada", abrir_pasta),
+            item("🔄 Alterar pasta monitorada", alterar_pasta),
+            item.Menu.SEPARATOR,
+            
+            # Seção de informações e configurações
+            item("📊 Ver estatísticas", ver_estatisticas),
+            item("🔄 Alternar início automático", alternar_inicio_automatico),
+            item("ℹ️ Sobre", mostrar_sobre),
+            item.Menu.SEPARATOR,
+            
+            # Sair
             item("❌ Sair", sair)
         )
         
-        # Criar e executar ícone da bandeja
-        icone = pystray.Icon("TUBA", image, f"{APP_NAME} v{APP_VERSION}", menu)
+        # Criar e executar ícone da bandeja com título dinâmico
+        titulo = f"{APP_NAME} v{APP_VERSION} - {'🟢 Ativo' if monitor_ativo else '🔴 Pausado'}"
+        icone = pystray.Icon("TUBA", image, titulo, menu)
         logging.info("Iniciando ícone da bandeja")
         icone.run()
     except Exception as e:
