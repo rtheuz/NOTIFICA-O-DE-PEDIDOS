@@ -102,12 +102,16 @@ def escolher_pasta():
     try:
         root = tk.Tk()
         root.withdraw()
-        pasta = filedialog.askdirectory(title="Selecione a pasta para monitorar")
+        # Forçar janela para frente
+        root.attributes('-topmost', True)
+        root.update()
+        pasta = filedialog.askdirectory(title="Selecione a pasta para monitorar", parent=root)
         root.destroy()
         logging.info(f"Pasta selecionada: {pasta if pasta else 'Nenhuma'}")
-        return pasta
+        return pasta if pasta else None
     except Exception as e:
         logging.error(f"Erro ao escolher pasta: {e}")
+        return None
         return None
 
 def salvar_config(pasta_path):
@@ -611,7 +615,7 @@ def alterar_pasta(icon, item):
         parar_monitor()
         
         # Pequeno delay para evitar comportamento suspeito
-        time.sleep(0.5)
+        time.sleep(0.3)
         
         nova = escolher_pasta()
         if nova and os.path.exists(nova):
@@ -619,7 +623,7 @@ def alterar_pasta(icon, item):
             salvar_config(pasta)
             
             # Delay adicional antes de reiniciar
-            time.sleep(0.5)
+            time.sleep(0.3)
             
             threading.Thread(target=iniciar_monitor, args=(pasta,), daemon=True).start()
             toaster.show_toast(
@@ -629,16 +633,33 @@ def alterar_pasta(icon, item):
                 icon_path=ICON_PATH if os.path.exists(ICON_PATH) else None
             )
             logging.info(f"Pasta alterada para: {pasta}")
-        else:
-            logging.warning("Nova pasta não selecionada ou inválida")
+        elif nova is None:
+            logging.info("Usuário cancelou a seleção de pasta")
             # Reiniciar monitor com pasta anterior se existir
             if pasta and os.path.exists(pasta):
                 threading.Thread(target=iniciar_monitor, args=(pasta,), daemon=True).start()
+                toaster.show_toast(
+                    "ℹ️ Seleção cancelada",
+                    "Mantendo pasta atual.",
+                    duration=2,
+                    icon_path=ICON_PATH if os.path.exists(ICON_PATH) else None
+                )
+        else:
+            logging.warning("Nova pasta não existe ou inválida")
+            # Reiniciar monitor com pasta anterior se existir
+            if pasta and os.path.exists(pasta):
+                threading.Thread(target=iniciar_monitor, args=(pasta,), daemon=True).start()
+            toaster.show_toast(
+                "⚠️ Pasta inválida",
+                "A pasta selecionada não existe.",
+                duration=3,
+                icon_path=ICON_PATH if os.path.exists(ICON_PATH) else None
+            )
     except Exception as e:
         logging.error(f"Erro ao alterar pasta: {e}")
         toaster.show_toast(
             "⚠️ Erro",
-            "Erro ao alterar pasta.",
+            f"Erro ao alterar pasta: {str(e)[:30]}",
             duration=3,
             icon_path=ICON_PATH if os.path.exists(ICON_PATH) else None
         )
@@ -662,12 +683,12 @@ def sair(icon, item):
         toaster.show_toast(
             "👋 Encerrando TUBA",
             "O monitor foi encerrado.",
-            duration=2,
+            duration=1,
             icon_path=ICON_PATH if os.path.exists(ICON_PATH) else None
         )
         
-        # Aguardar a notificação aparecer (evita comportamento suspeito)
-        time.sleep(2.5)
+        # Aguardar brevemente para garantir a notificação
+        time.sleep(1.2)
         
         # Parar o ícone da bandeja
         icon.stop()
