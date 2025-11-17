@@ -335,7 +335,9 @@ def abrir_pasta(icon, item):
     try:
         # Obter caminho da pasta
         caminho = pasta or carregar_config() or ""
-        logging.info(f"Tentando abrir pasta. pasta={pasta}, caminho={caminho}")
+        logging.info(f"Tentando abrir pasta. pasta='{pasta}', caminho='{caminho}'")
+        logging.info(f"Tipo pasta: {type(pasta)}, Tipo caminho: {type(caminho)}")
+        logging.info(f"Pasta existe? {os.path.exists(caminho) if caminho else 'N/A'}")
         
         # Verificar se o caminho existe
         if caminho and os.path.exists(caminho):
@@ -350,24 +352,31 @@ def abrir_pasta(icon, item):
                 )
                 return
             
-            # Tentar abrir no Explorer
+            # Tentar abrir no Explorer - usar os.startfile é mais confiável no Windows
             try:
-                subprocess.Popen(['explorer', caminho])
-                logging.info(f"Pasta aberta: {caminho}")
+                # Método preferido no Windows
+                os.startfile(caminho)
+                logging.info(f"Pasta aberta com os.startfile: {caminho}")
             except Exception as e1:
-                logging.warning(f"Erro ao abrir pasta (tentativa 1): {e1}")
-                # Fallback com aspas
+                logging.warning(f"Erro ao abrir pasta com os.startfile (tentativa 1): {e1}")
+                # Fallback para subprocess
                 try:
-                    subprocess.Popen(f'explorer "{caminho}"', shell=True)
-                    logging.info(f"Pasta aberta (fallback): {caminho}")
+                    subprocess.Popen(['explorer', caminho])
+                    logging.info(f"Pasta aberta com explorer: {caminho}")
                 except Exception as e2:
-                    logging.error(f"Erro ao abrir pasta (tentativa 2): {e2}")
-                    toaster.show_toast(
-                        "⚠️ Erro",
-                        "Não foi possível abrir a pasta.",
-                        duration=3,
-                        icon_path=ICON_PATH if os.path.exists(ICON_PATH) else None
-                    )
+                    logging.warning(f"Erro ao abrir pasta (tentativa 2): {e2}")
+                    # Último fallback com shell=True
+                    try:
+                        subprocess.Popen(f'explorer "{caminho}"', shell=True)
+                        logging.info(f"Pasta aberta (fallback shell): {caminho}")
+                    except Exception as e3:
+                        logging.error(f"Erro ao abrir pasta (tentativa 3): {e3}")
+                        toaster.show_toast(
+                            "⚠️ Erro",
+                            "Não foi possível abrir a pasta.",
+                            duration=3,
+                            icon_path=ICON_PATH if os.path.exists(ICON_PATH) else None
+                        )
         else:
             logging.warning("Nenhuma pasta válida configurada")
             toaster.show_toast(
@@ -782,6 +791,7 @@ if __name__ == "__main__":
         
         # Carregar configuração
         pasta = carregar_config()
+        logging.info(f"Pasta carregada na inicialização: {pasta}")
         if not pasta:
             logging.error("Nenhuma pasta selecionada")
             toaster.show_toast(
