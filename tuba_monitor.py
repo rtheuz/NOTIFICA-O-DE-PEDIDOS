@@ -99,6 +99,7 @@ def escolher_pasta():
     Returns:
         str: Caminho da pasta selecionada ou None se cancelado.
     """
+    root = None
     try:
         root = tk.Tk()
         root.withdraw()
@@ -106,13 +107,19 @@ def escolher_pasta():
         root.attributes('-topmost', True)
         root.update()
         pasta = filedialog.askdirectory(title="Selecione a pasta para monitorar", parent=root)
-        root.destroy()
         logging.info(f"Pasta selecionada: {pasta if pasta else 'Nenhuma'}")
         return pasta if pasta else None
     except Exception as e:
         logging.error(f"Erro ao escolher pasta: {e}")
         return None
-        return None
+    finally:
+        # Garantir que a janela seja destruída de forma segura
+        if root is not None:
+            try:
+                root.quit()
+                root.destroy()
+            except Exception as e:
+                logging.warning(f"Erro ao destruir janela tkinter: {e}")
 
 def salvar_config(pasta_path):
     """
@@ -718,13 +725,11 @@ def sair(icon, item):
         # Aguardar brevemente para garantir a notificação
         time.sleep(1.2)
         
-        # Parar o ícone da bandeja
-        icon.stop()
-        
         logging.info("Aplicativo encerrado com sucesso")
         
-        # Usar sys.exit ao invés de os._exit para encerramento graceful
-        sys.exit(0)
+        # Parar o ícone da bandeja (isso encerra o loop principal do pystray)
+        icon.stop()
+        
     except Exception as e:
         logging.error(f"Erro durante encerramento: {e}")
         # Em caso de erro, tentar encerrar mesmo assim
@@ -732,7 +737,6 @@ def sair(icon, item):
             icon.stop()
         except:
             pass
-        sys.exit(1)
 
 def iniciar_bandeja():
     """
