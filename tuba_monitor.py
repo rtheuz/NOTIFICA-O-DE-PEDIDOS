@@ -3,6 +3,7 @@ import sys
 import time
 import threading
 import json
+import logging
 import tkinter as tk
 from tkinter import filedialog
 from watchdog.observers import Observer
@@ -13,6 +14,14 @@ from pystray import MenuItem as item
 from PIL import Image
 import winsound
 import subprocess
+
+# ---------------------------------------------------
+# Configuração de logging
+# ---------------------------------------------------
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
 
 # ---------------------------------------------------
 # Helper para recursos (funciona com PyInstaller --onefile)
@@ -48,11 +57,40 @@ toaster = ToastNotifier()
 # Funções auxiliares
 # ---------------------------------------------------
 def escolher_pasta():
-    root = tk.Tk()
-    root.withdraw()
-    pasta = filedialog.askdirectory(title="Selecione a pasta para monitorar")
-    root.destroy()
-    return pasta
+    """
+    Abre um diálogo para o usuário selecionar a pasta a ser monitorada.
+    
+    Returns:
+        str: Caminho da pasta selecionada ou None se cancelado.
+    """
+    pasta_selecionada = None
+    
+    def _selecionar():
+        nonlocal pasta_selecionada
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes('-topmost', True)
+        root.lift()
+        root.focus_force()
+        
+        try:
+            pasta_selecionada = filedialog.askdirectory(
+                title="Selecione a pasta para monitorar",
+                parent=root
+            )
+            logging.info(f"Pasta selecionada: {pasta_selecionada if pasta_selecionada else 'Nenhuma'}")
+        except Exception as e:
+            logging.error(f"Erro ao escolher pasta: {e}")
+            pasta_selecionada = None
+        finally:
+            root.destroy()
+    
+    try:
+        _selecionar()
+        return pasta_selecionada if pasta_selecionada else None
+    except Exception as e:
+        logging.error(f"Erro crítico ao escolher pasta: {e}")
+        return None
 
 def salvar_config(pasta_path):
     with open(CONFIG_PATH, "w", encoding="utf-8") as f:
@@ -141,14 +179,65 @@ def abrir_pasta(icon, item):
 # Ícone da bandeja
 # ---------------------------------------------------
 def alterar_pasta(icon, item):
+    """
+    Permite ao usuário alterar a pasta monitorada.
+    Para o monitor atual, solicita nova pasta e reinicia o monitoramento.
+    
+    Args:
+        icon: Ícone da bandeja do sistema.
+        item: Item do menu clicado.
+    """
     global pasta
-    parar_monitor()
-    nova = escolher_pasta()
-    if nova:
-        pasta = nova
-        salvar_config(pasta)
-        threading.Thread(target=iniciar_monitor, args=(pasta,), daemon=True).start()
-        toaster.show_toast("📂 Pasta alterada", f"Agora monitorando:\n{pasta}", duration=3, icon_path=ICON_PATH)
+    
+    try:
+        logging.info("Alterando pasta monitorada")
+        parar_monitor()
+        
+        time.sleep(0.3)
+        
+        # Executar diretamente (Tkinter não é thread-safe)
+        nova = escolher_pasta()
+        
+        if nova and os.path.exists(nova):
+            pasta = nova
+            salvar_config(pasta)
+            time.sleep(0.3)
+            threading.Thread(target=iniciar_monitor, args=(pasta,), daemon=True).start()
+            toaster.show_toast(
+                "📂 Pasta alterada",
+                f"Agora monitorando:\n{pasta}",
+                duration=3,
+                icon_path=ICON_PATH if os.path.exists(ICON_PATH) else None
+            )
+            logging.info(f"Pasta alterada para: {pasta}")
+        elif nova is None:
+            logging.info("Usuário cancelou a seleção de pasta")
+            if pasta and os.path.exists(pasta):
+                threading.Thread(target=iniciar_monitor, args=(pasta,), daemon=True).start()
+                toaster.show_toast(
+                    "ℹ️ Seleção cancelada",
+                    "Mantendo pasta atual.",
+                    duration=2,
+                    icon_path=ICON_PATH if os.path.exists(ICON_PATH) else None
+                )
+        else:
+            logging.warning("Nova pasta não existe ou inválida")
+            if pasta and os.path.exists(pasta):
+                threading.Thread(target=iniciar_monitor, args=(pasta,), daemon=True).start()
+            toaster.show_toast(
+                "⚠️ Pasta inválida",
+                "A pasta selecionada não existe.",
+                duration=3,
+                icon_path=ICON_PATH if os.path.exists(ICON_PATH) else None
+            )
+    except Exception as e:
+        logging.error(f"Erro ao alterar pasta: {e}")
+        toaster.show_toast(
+            "⚠️ Erro",
+            f"Erro ao alterar pasta: {str(e)[:30]}",
+            duration=3,
+            icon_path=ICON_PATH if os.path.exists(ICON_PATH) else None
+        )
 
 def sair(icon, item):
     parar_monitor()
